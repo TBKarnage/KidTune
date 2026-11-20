@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>KidTune — Family Music Requests for Plex</title>
+  <meta name="description" content="A kid-friendly iPad app to request clean music for Plex and Plexamp with automatic explicit-content filtering and full metadata tagging." />
+
+  <!-- iPadOS / iOS PWA Support -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="KidTune" />
+  <meta name="theme-color" content="#FAF6F0" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png" />
+  <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png" />
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <img src="/static/icons/icon-192.png" alt="KidTune app icon" class="brand-icon" width="44" height="44" />
+        <div>
+          <span class="brand-name">KidTune</span>
+          <span class="brand-sub">Plexamp Jukebox</span>
+        </div>
+      </div>
+
+      <div class="topbar-controls">
+        <div class="profile-switcher" id="profile-switcher" role="group" aria-label="Who is requesting"></div>
+        <button id="parent-mode-btn" class="btn btn-secondary btn-compact" type="button">
+          <span id="parent-mode-label">Parent Mode</span>
+          <span id="pending-badge" class="count-badge hidden">0</span>
+        </button>
+      </div>
+    </header>
+
+    <main id="kid-view" class="main-content">
+      <section class="search-stage" aria-labelledby="hero-heading">
+        <div class="hero-copy">
+          <h1 id="hero-heading">Find a song for Plexamp</h1>
+          <p id="hero-subtitle">Search any song or artist. Clean tracks go straight to your Plex music library with album art and lyrics.</p>
+        </div>
+
+        <form id="search-form" class="search-bar" autocomplete="off">
+          <label for="search-input" class="sr-only">Search song or artist</label>
+          <input
+            id="search-input"
+            type="search"
+            placeholder="Try “Shake It Off” or “Encanto”..."
+            enterkeyhint="search"
+            required
+          />
+          <button id="clear-search-btn" class="btn-icon hidden" type="button" aria-label="Clear search">&times;</button>
+          <button id="search-submit-btn" class="btn btn-primary" type="submit">Search</button>
+        </form>
+
+        <p id="voice-hint" class="voice-hint hidden"></p>
+      </section>
+
+      <section id="results-section" class="content-section hidden" aria-labelledby="results-heading">
+        <div class="section-header">
+          <h2 id="results-heading">Search Results</h2>
+          <span id="results-meta" class="section-meta"></span>
+        </div>
+        <div id="results-grid" class="results-grid"></div>
+        <div id="custom-request-banner" class="custom-banner hidden"></div>
+      </section>
+
+      <section class="content-section" aria-labelledby="queue-heading">
+        <div class="section-header">
+          <div>
+            <h2 id="queue-heading">Song Requests</h2>
+            <p class="section-sub">Live download and Plex import progress</p>
+          </div>
+          <div class="filter-tabs" role="tablist" aria-label="Filter requests">
+            <button class="filter-tab active" data-filter="all" type="button">All</button>
+            <button class="filter-tab" data-filter="mine" type="button">My Picks</button>
+            <button class="filter-tab" data-filter="completed" type="button">In Plex</button>
+          </div>
+        </div>
+        <div id="requests-list" class="requests-list"></div>
+      </section>
+    </main>
+
+    <main id="parent-view" class="main-content hidden" aria-labelledby="parent-heading">
+      <section class="parent-header-card">
+        <div>
+          <h1 id="parent-heading">Parent Controls</h1>
+          <p>Review flagged songs, edit metadata, and configure Plex, safety rules, and Google Home.</p>
+        </div>
+        <div class="parent-header-actions">
+          <button id="back-to-kids-btn" class="btn btn-secondary" type="button">Back to Kid View</button>
+          <button id="parent-logout-btn" class="btn btn-ghost" type="button">Lock Parent Mode</button>
+        </div>
+      </section>
+
+      <div id="default-pin-warning" class="alert-banner hidden">
+        Default Parent PIN (<code>1234</code>) is still active. Change it in Security below so kids can't unlock Parent Mode.
+      </div>
+
+      <nav class="parent-tabs" aria-label="Parent sections">
+        <button class="parent-tab active" data-tab="approvals" type="button">
+          Approvals <span id="tab-pending-count" class="tab-count">0</span>
+        </button>
+        <button class="parent-tab" data-tab="manual" type="button">Add Song / URL</button>
+        <button class="parent-tab" data-tab="settings" type="button">Safety &amp; Integrations</button>
+      </nav>
+
+      <section id="tab-approvals" class="parent-panel">
+        <div id="approvals-list" class="approvals-list"></div>
+      </section>
+
+      <section id="tab-manual" class="parent-panel hidden">
+        <form id="parent-direct-form" class="panel-card form-grid">
+          <h2>Add Song or Direct URL (Parent)</h2>
+          <p class="field-help">Parents can submit a song query or direct YouTube URL to download with full metadata tagging.</p>
+          <div class="form-field">
+            <label for="direct-query">Song Title / Search Query</label>
+            <input id="direct-query" type="text" placeholder="e.g., Golden Hour by JVKE" required />
+          </div>
+          <div class="form-field">
+            <label for="direct-url">Optional Direct Video URL</label>
+            <input id="direct-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+          </div>
+          <div class="form-field">
+            <label for="direct-requester">Assign to Profile</label>
+            <input id="direct-requester" type="text" value="Parent" />
+          </div>
+          <div class="form-actions">
+            <button id="direct-submit-btn" class="btn btn-primary" type="submit">Queue Download</button>
+          </div>
+        </form>
+      </section>
+
+      <section id="tab-settings" class="parent-panel hidden">
+        <form id="settings-form" class="settings-stack">
+          <div class="panel-card form-grid">
+            <h2>Explicit Safeguards &amp; Kid Profiles</h2>
+            <div class="form-field">
+              <label for="set-policy-mode">Approval Policy</label>
+              <select id="set-policy-mode">
+                <option value="hybrid">Hybrid (Auto-download clean; parent checks unverified; block explicit)</option>
+                <option value="strict">Strict (All requests wait for Parent Approval; block explicit)</option>
+                <option value="auto_clean">Auto-Clean Only (Auto-download clean; reject explicit &amp; unverified)</option>
+              </select>
+            </div>
+            <div class="form-field">
+              <label for="set-max-duration">Max Song Length (seconds)</label>
+              <input id="set-max-duration" type="number" min="60" max="3600" />
+            </div>
+            <div class="form-field form-checkbox">
+              <input id="set-auto-clean" type="checkbox" />
+              <label for="set-auto-clean">Automatically swap explicit voice/text requests to official Clean/Radio Edits when available</label>
+            </div>
+            <div class="form-field form-span-2">
+              <label for="set-kid-profiles">Kid Profiles (comma-separated)</label>
+              <input id="set-kid-profiles" type="text" placeholder="Alex, Sam, Family" />
+            </div>
+            <div class="form-field form-span-2">
+              <label for="set-blocked-words">Extra Blocked Words / Phrases (comma-separated)</label>
+              <input id="set-blocked-words" type="text" placeholder="custom words or song themes to block" />
+            </div>
+            <div class="form-field form-span-2">
+              <label for="set-blocked-artists">Blocked Artists (comma-separated)</label>
+              <input id="set-blocked-artists" type="text" placeholder="Artist names to always block" />
+            </div>
+          </div>
+
+          <div class="panel-card form-grid">
+            <h2>Plex Media Server</h2>
+            <div class="form-field">
+              <label for="set-plex-url">Plex Server URL</label>
+              <input id="set-plex-url" type="url" placeholder="http://192.168.1.50:32400" />
+            </div>
+            <div class="form-field">
+              <label for="set-plex-token">Plex Token (leave blank to keep existing)</label>
+              <input id="set-plex-token" type="password" placeholder="X-Plex-Token" autocomplete="off" />
+            </div>
+            <div class="form-field">
+              <label for="set-plex-section">Music Library Section ID</label>
+              <input id="set-plex-section" type="text" placeholder="Auto-detect or enter ID (e.g., 4)" />
+            </div>
+            <div class="form-field">
+              <label for="set-plex-prefix">Plex Path Mapping (optional)</label>
+              <input id="set-plex-prefix" type="text" placeholder="e.g., /data/kids-music if Plex path differs" />
+            </div>
+            <div class="form-actions form-span-2">
+              <button id="test-plex-btn" class="btn btn-secondary" type="button">Test &amp; Find Music Library</button>
+              <button id="scan-plex-btn" class="btn btn-secondary" type="button">Trigger Scan Now</button>
+              <span id="plex-test-status" class="inline-status"></span>
+            </div>
+          </div>
+
+          <div class="panel-card form-grid">
+            <h2>Google Home (Google Keep List + Cast TTS)</h2>
+            <div class="form-field form-checkbox form-span-2">
+              <input id="set-keep-enabled" type="checkbox" />
+              <label for="set-keep-enabled">Poll Google Keep list for voice requests (&ldquo;Hey Google, add Song by Artist to my Music Requests list&rdquo;)</label>
+            </div>
+            <div class="form-field">
+              <label for="set-keep-email">Google Account Email</label>
+              <input id="set-keep-email" type="email" placeholder="parent@gmail.com" />
+            </div>
+            <div class="form-field">
+              <label for="set-keep-token">Google Keep Master Token (leave blank to keep)</label>
+              <input id="set-keep-token" type="password" placeholder="aas_et/..." autocomplete="off" />
+            </div>
+            <div class="form-field">
+              <label for="set-keep-list">Keep List Title</label>
+              <input id="set-keep-list" type="text" placeholder="Music Requests" />
+            </div>
+            <div class="form-field">
+              <label for="set-keep-interval">Poll Interval (seconds)</label>
+              <input id="set-keep-interval" type="number" min="15" max="3600" />
+            </div>
+            <div class="form-actions form-span-2">
+              <button id="sync-keep-btn" class="btn btn-secondary" type="button">Sync Google Keep Now</button>
+              <span id="keep-sync-status" class="inline-status"></span>
+            </div>
+
+            <hr class="divider form-span-2" />
+
+            <div class="form-field form-checkbox form-span-2">
+              <input id="set-cast-enabled" type="checkbox" />
+              <label for="set-cast-enabled">Broadcast voice announcements on Google Home speakers when songs finish or are blocked</label>
+            </div>
+            <div class="form-field form-span-2">
+              <label for="set-cast-devices">Target Speakers (comma-separated names or IPs; blank = all speakers)</label>
+              <input id="set-cast-devices" type="text" placeholder="Kitchen Speaker, Kids Room" />
+            </div>
+            <div class="form-field form-span-2">
+              <label for="set-public-url">Server LAN URL (used by Google Home to stream TTS audio)</label>
+              <input id="set-public-url" type="url" placeholder="http://192.168.1.50:8484" />
+            </div>
+            <div class="form-actions form-span-2">
+              <button id="discover-cast-btn" class="btn btn-secondary" type="button">Discover Speakers</button>
+              <button id="test-cast-btn" class="btn btn-secondary" type="button">Send Test Announcement</button>
+              <span id="cast-status" class="inline-status"></span>
+            </div>
+          </div>
+
+          <div class="save-bar">
+            <button id="save-settings-btn" class="btn btn-primary" type="submit">Save Settings</button>
+            <span id="settings-save-status" class="inline-status"></span>
+          </div>
+        </form>
+
+        <form id="pin-form" class="panel-card form-grid">
+          <h2>Parent PIN Security</h2>
+          <div class="form-field">
+            <label for="pin-current">Current PIN</label>
+            <input id="pin-current" type="password" inputmode="numeric" minlength="4" required />
+          </div>
+          <div class="form-field">
+            <label for="pin-new">New PIN (4+ digits)</label>
+            <input id="pin-new" type="password" inputmode="numeric" minlength="4" required />
+          </div>
+          <div class="form-actions form-span-2">
+            <button id="change-pin-btn" class="btn btn-secondary" type="submit">Update Parent PIN</button>
+            <span id="pin-status" class="inline-status"></span>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <!-- Parent PIN Modal -->
+  <div id="pin-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="pin-modal-title">
+    <div class="modal-card">
+      <div class="modal-header">
+        <h2 id="pin-modal-title">Unlock Parent Mode</h2>
+        <button id="close-pin-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
+      </div>
+      <p class="modal-copy">Enter your Parent PIN to review flagged songs or update safety settings.</p>
+      <form id="pin-login-form" class="pin-login-form">
+        <label for="pin-login-input" class="sr-only">Parent PIN</label>
+        <input
+          id="pin-login-input"
+          type="password"
+          inputmode="numeric"
+          autocomplete="off"
+          placeholder="Enter PIN"
+          required
+        />
+        <p id="pin-login-error" class="error-text hidden"></p>
+        <button id="pin-login-submit" class="btn btn-primary" type="submit">Unlock</button>
+      </form>
+    </div>
+  </div>
+
+  <div id="toast-region" class="toast-region" aria-live="polite"></div>
+
+  <script type="module" src="/static/js/app.js"></script>
+</body>
+</html>

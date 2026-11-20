@@ -1,0 +1,39 @@
+# Git & GitHub metadata
+.git/
+.github/
+.gitignore
+.gitattributes
+.editorconfig
+
+# Docs & repo files
+*.md
+LICENSE
+
+# Python & virtual environments
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# Tests
+tests/
+
+# Local runtime state & secrets
+data/
+music/
+.env
+.env.*
+!.env.example
+*.db
+*.sqlite*
+
+# OS & editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

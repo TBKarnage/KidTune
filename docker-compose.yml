@@ -1,0 +1,19 @@
+services:
+  kidtune:
+    build: .
+    container_name: kidtune
+    restart: unless-stopped
+    # Note: Use `network_mode: host` on Linux if you enable Google Home Cast discovery (mDNS)
+    # and comment out `ports:` below. Otherwise `ports:` works cleanly for iPad + Plex + Keep.
+    # network_mode: host
+    ports:
+      - "${PORT:-8484}:8484"
+    env_file:
+      - .env
+    environment:
+      - DATA_DIR=/data/app
+      - MUSIC_DIR=/music
+    volumes:
+      - ./data:/data/app
+      # Point PLEX_MUSIC_PATH in .env to your Plex Kids Music folder!
+      - ${PLEX_MUSIC_PATH:-./music}:/music
