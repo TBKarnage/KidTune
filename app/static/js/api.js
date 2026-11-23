@@ -22,11 +22,30 @@ async function requestJson(url, options = {}) {
 export const api = {
   bootstrap: () => requestJson("/api/bootstrap"),
   search: (query) => requestJson(`/api/search?q=${encodeURIComponent(query)}`),
+  searchAlbums: (query) => requestJson(`/api/search/albums?q=${encodeURIComponent(query)}`),
+  getAlbumDetails: (provider, albumId) =>
+    requestJson(`/api/albums/${encodeURIComponent(provider)}/${encodeURIComponent(albumId)}`),
+  listLibraryCovers: () => requestJson("/api/library/covers?limit=36"),
+
   listRequests: () => requestJson("/api/requests?limit=100"),
   submitRequest: (payload) =>
     requestJson("/api/requests", {
       method: "POST",
       body: JSON.stringify(payload),
+    }),
+  submitAlbumRequest: (payload) =>
+    requestJson("/api/requests/album", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  cleanupRequests: (scope = "finished", queue = "kid") =>
+    requestJson(`/api/requests/cleanup?queue=${encodeURIComponent(queue)}`, {
+      method: "POST",
+      body: JSON.stringify({ scope }),
+    }),
+  deleteRequest: (id) =>
+    requestJson(`/api/requests/${id}`, {
+      method: "DELETE",
     }),
 
   parentLogin: (pin) =>
@@ -45,6 +64,13 @@ export const api = {
     requestJson("/api/parent/settings", {
       method: "PUT",
       body: JSON.stringify(payload),
+    }),
+
+  listParentDownloads: () => requestJson("/api/parent/downloads?limit=100"),
+  cleanupParentDownloads: (scope = "finished") =>
+    requestJson("/api/parent/downloads/cleanup", {
+      method: "POST",
+      body: JSON.stringify({ scope }),
     }),
 
   approveRequest: (id, payload) =>

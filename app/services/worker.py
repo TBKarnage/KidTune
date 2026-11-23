@@ -27,6 +27,7 @@ from app.services.lyrics import fetch_lyrics
 from app.services.metadata import fetch_artwork_bytes, install_track_into_plex
 from app.services.plex import trigger_library_scan
 from app.services.request_pipeline import submit_music_request
+from app.services.safety import find_profanity_matches
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,35 @@ class BackgroundWorker:
                 album=track.album,
                 duration_sec=track.duration_sec or downloaded.duration_sec,
             )
+
+            # Defense-in-depth: abort before saving to Plex if freshly fetched lyrics contain explicit content
+            if not parent_override and lyrics:
+                lyric_text = lyrics.plain_lyrics or lyrics.synced_lyrics
+                lyric_hits = find_profanity_matches(lyric_text, runtime.blocked_words)
+                if lyric_hits:
+                    reason = f"Explicit or mature language detected in lyrics ({', '.join(lyric_hits)})"
+                    logger.info("Blocking request %s before Plex install: %s", record.id, reason)
+                    self.db.update_request(
+                        record.id,
+                        status=RequestStatus.BLOCKED,
+                        status_detail=reason,
+                        explicit_verdict=ExplicitVerdict.EXPLICIT,
+                        safety_reasons=[reason],
+                    )
+                    if record.keep_item_id:
+                        await update_keep_item_status(
+                            email=str(raw_settings.get("google_keep_email") or ""),
+                            master_token=str(raw_settings.get("google_keep_master_token") or ""),
+                            list_name=str(raw_settings.get("google_keep_list_name") or "Music Requests"),
+                            item_id=record.keep_item_id,
+                            check_off=True,
+                            status_tag="Blocked",
+                        )
+                    await self._maybe_announce(
+                        f"Sorry, {track.title} could not be added because explicit lyrics were detected."
+                    )
+                    return
+
             artwork = await fetch_artwork_bytes(
                 track.artwork_url,
                 fallback_url=downloaded.thumbnail_url,
@@ -177,6 +207,7 @@ class BackgroundWorker:
                 except Exception as exc:
                     logger.warning("Plex scan failed for request %s: %s", record.id, exc)
 
+            final_artwork_url = track.artwork_url or downloaded.thumbnail_url
             self.db.update_request(
                 record.id,
                 status=RequestStatus.COMPLETED,
@@ -188,6 +219,7 @@ class BackgroundWorker:
                 year=track.year,
                 genre=track.genre,
                 duration_sec=track.duration_sec or downloaded.duration_sec,
+                artwork_url=final_artwork_url,
                 file_path=str(plex_paths.audio_path),
                 lyrics_embedded=bool(lyrics and (lyrics.plain_lyrics or lyrics.synced_lyrics)),
                 plex_scanned=plex_scanned,
@@ -204,9 +236,10 @@ class BackgroundWorker:
                     status_tag="Added",
                 )
 
-            await self._maybe_announce(
-                f"Added {track.title} by {track.artist} to Plex!"
-            )
+            if record.source != RequestSource.PARENT:
+                await self._maybe_announce(
+                    f"Added {track.title} by {track.artist} to Plex!"
+                )
 
         except UnsafeDownloadCandidateError as exc:
             logger.info("Candidate rejected for request %s: %s", record.id, exc)

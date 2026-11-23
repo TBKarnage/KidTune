@@ -23,32 +23,59 @@ from app.auth import (
 from app.config import Settings, get_settings, resolve_public_base_url
 from app.database import Database
 from app.models import (
+    AlbumDetailsResult,
+    AlbumRequestCreate,
+    AlbumRequestResponse,
     ApproveRequestPayload,
     CastAnnounceRequest,
     DeclineRequestPayload,
     ExplicitVerdict,
+    LibraryCoverItem,
     MusicRequestCreate,
     MusicRequestRecord,
     ParentLoginRequest,
     PinChangeRequest,
+    RequestCleanupPayload,
+    RequestCleanupResponse,
     RequestSource,
     RequestStatus,
     RuntimeSettingsUpdate,
     RuntimeSettingsView,
+    SearchAlbumResult,
     SearchTrackResult,
 )
-from app.services.catalog import find_clean_alternative, search_catalog
+from app.services.artwork import (
+    extract_local_cover,
+    fetch_and_cache_artwork,
+    is_allowed_artwork_url,
+    list_library_covers,
+    resolve_library_cover_path,
+)
+from app.services.catalog import (
+    find_clean_alternative,
+    get_album_tracks,
+    search_albums,
+    search_catalog,
+)
 from app.services.google_cast import announce_on_google_home, discover_cast_devices
 from app.services.google_keep import update_keep_item_status
+from app.services.lyrics import fetch_lyrics_batch
 from app.services.plex import discover_music_sections, trigger_library_scan
-from app.services.request_pipeline import submit_music_request
-from app.services.safety import assess_request
+from app.services.request_pipeline import submit_album_request, submit_music_request
+from app.services.safety import assess_album, assess_request
 from app.services.worker import BackgroundWorker
 
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+FALLBACK_ICON_PATH = STATIC_DIR / "icons" / "icon-192.png"
 _TTS_FILENAME_RE = re.compile(r"^[a-f0-9]{32}\.mp3$")
+_FINISHED_STATUSES = {
+    RequestStatus.COMPLETED,
+    RequestStatus.BLOCKED,
+    RequestStatus.DECLINED,
+    RequestStatus.FAILED,
+}
 
 
 def create_app(settings: Optional[Settings] = None) -> FastAPI:
@@ -105,6 +132,7 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         return FileResponse(
             STATIC_DIR / "sw.js",
             media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
         )
 
     @app.get("/api/health")
@@ -114,8 +142,20 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
     @app.get("/api/bootstrap")
     async def bootstrap(request: Request) -> dict:
         runtime = db.get_settings_view()
-        pending = db.list_requests(status=RequestStatus.PENDING_APPROVAL, limit=200)
+        pending = db.list_requests(
+            status=RequestStatus.PENDING_APPROVAL,
+            exclude_source=RequestSource.PARENT,
+            limit=200,
+        )
         is_parent = _is_parent_authenticated(request)
+        parent_active = 0
+        if is_parent:
+            parent_recs = db.list_requests(source=RequestSource.PARENT, limit=200)
+            parent_active = sum(
+                1
+                for r in parent_recs
+                if r.status in {RequestStatus.QUEUED, RequestStatus.DOWNLOADING, RequestStatus.TAGGING}
+            )
         return {
             "app_name": cfg.app_name,
             "version": __version__,
@@ -127,17 +167,99 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             "parent_authenticated": is_parent,
             "parent_pin_is_default": runtime.parent_pin_is_default if is_parent else False,
             "pending_approval_count": len(pending),
+            "parent_active_downloads_count": parent_active,
         }
+
+    @app.get("/api/artwork", include_in_schema=False)
+    async def proxy_artwork(url: str = Query(..., min_length=8, max_length=2048)) -> Response:
+        if not is_allowed_artwork_url(url):
+            raise HTTPException(status_code=400, detail="Unsupported artwork host")
+        cached = await fetch_and_cache_artwork(url, cfg.artwork_cache_dir)
+        if cached is not None:
+            img_bytes, mime = cached
+            return Response(
+                content=img_bytes,
+                media_type=mime,
+                headers={"Cache-Control": "public, max-age=86400"},
+            )
+        return FileResponse(
+            FALLBACK_ICON_PATH,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    @app.get("/api/requests/{request_id}/artwork", include_in_schema=False)
+    async def serve_request_artwork(request_id: int) -> Response:
+        rec = db.get_request(request_id)
+        if rec is None:
+            return FileResponse(FALLBACK_ICON_PATH, media_type="image/png")
+
+        local = extract_local_cover(rec.file_path)
+        if local is not None:
+            img_bytes, mime = local
+            return Response(
+                content=img_bytes,
+                media_type=mime,
+                headers={"Cache-Control": "public, max-age=3600"},
+            )
+
+        if rec.artwork_url and is_allowed_artwork_url(rec.artwork_url):
+            cached = await fetch_and_cache_artwork(rec.artwork_url, cfg.artwork_cache_dir)
+            if cached is not None:
+                img_bytes, mime = cached
+                return Response(
+                    content=img_bytes,
+                    media_type=mime,
+                    headers={"Cache-Control": "public, max-age=86400"},
+                )
+
+        return FileResponse(
+            FALLBACK_ICON_PATH,
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=300"},
+        )
+
+    @app.get("/api/library/covers", response_model=list[LibraryCoverItem])
+    async def get_library_covers(limit: int = Query(default=36, ge=1, le=60)) -> list[LibraryCoverItem]:
+        all_requests = db.list_requests(limit=300)
+        return list_library_covers(
+            music_dir=cfg.music_dir,
+            requests=all_requests,
+            limit=limit,
+        )
+
+    @app.get("/api/library/cover/{cover_hash}", include_in_schema=False)
+    async def serve_library_cover(cover_hash: str) -> Response:
+        path = resolve_library_cover_path(cfg.music_dir, cover_hash)
+        if path is None:
+            raise HTTPException(status_code=404, detail="Cover not found")
+        mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
+        return FileResponse(
+            path,
+            media_type=mime,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @app.get("/api/search", response_model=list[SearchTrackResult])
     async def search_tracks(q: str = Query(..., min_length=1, max_length=200)) -> list[SearchTrackResult]:
         runtime = db.get_settings_view()
         tracks = await search_catalog(q.strip(), limit=15)
+        lyrics_map = {}
+        if cfg.check_lyrics_on_search and tracks:
+            lyrics_map = await fetch_lyrics_batch(tracks, timeout=3.5, concurrency=6)
+
         results: list[SearchTrackResult] = []
         for track in tracks:
+            key = track.track_id or f"{track.artist}::{track.title}"
+            lyrics_obj = lyrics_map.get(key)
+            lyrics_text = (
+                (lyrics_obj.plain_lyrics or lyrics_obj.synced_lyrics) if lyrics_obj else ""
+            )
             assessment = assess_request(
                 query=q,
                 track=track,
+                lyrics_text=lyrics_text,
+                lyrics_checked=cfg.check_lyrics_on_search,
                 policy_mode=runtime.policy_mode,
                 blocked_words=runtime.blocked_words,
                 blocked_artists=runtime.blocked_artists,
@@ -146,15 +268,85 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             results.append(SearchTrackResult(track=track, safety=assessment))
         return results
 
+    @app.get("/api/search/albums", response_model=list[SearchAlbumResult])
+    async def search_catalog_albums(
+        q: str = Query(..., min_length=1, max_length=200),
+    ) -> list[SearchAlbumResult]:
+        runtime = db.get_settings_view()
+        albums = await search_albums(q.strip(), limit=12)
+        results: list[SearchAlbumResult] = []
+        for album in albums:
+            assessment = assess_album(
+                query=q,
+                album=album,
+                policy_mode=runtime.policy_mode,
+                blocked_words=runtime.blocked_words,
+                blocked_artists=runtime.blocked_artists,
+            )
+            results.append(SearchAlbumResult(album=album, safety=assessment))
+        return results
+
+    @app.get("/api/albums/{provider}/{album_id}", response_model=AlbumDetailsResult)
+    async def get_album_details(provider: str, album_id: str) -> AlbumDetailsResult:
+        if provider not in {"itunes", "deezer"}:
+            raise HTTPException(status_code=400, detail="Unsupported catalog provider")
+        fetched = await get_album_tracks(provider, album_id)
+        if fetched is None:
+            raise HTTPException(status_code=404, detail="Album not found")
+
+        album, tracks = fetched
+        runtime = db.get_settings_view()
+        album_safety = assess_album(
+            query=album.title,
+            album=album,
+            policy_mode=runtime.policy_mode,
+            blocked_words=runtime.blocked_words,
+            blocked_artists=runtime.blocked_artists,
+        )
+
+        lyrics_map = {}
+        if cfg.check_lyrics_on_search and tracks:
+            lyrics_map = await fetch_lyrics_batch(tracks, timeout=3.5, concurrency=6)
+
+        assessed_tracks: list[SearchTrackResult] = []
+        for track in tracks:
+            key = track.track_id or f"{track.artist}::{track.title}"
+            lyrics_obj = lyrics_map.get(key)
+            lyrics_text = (
+                (lyrics_obj.plain_lyrics or lyrics_obj.synced_lyrics) if lyrics_obj else ""
+            )
+            track_safety = assess_request(
+                query=f"{track.title} by {track.artist}",
+                track=track,
+                lyrics_text=lyrics_text,
+                lyrics_checked=cfg.check_lyrics_on_search,
+                policy_mode=runtime.policy_mode,
+                blocked_words=runtime.blocked_words,
+                blocked_artists=runtime.blocked_artists,
+                max_track_duration_sec=runtime.max_track_duration_sec,
+            )
+            assessed_tracks.append(SearchTrackResult(track=track, safety=track_safety))
+
+        return AlbumDetailsResult(
+            album=album,
+            safety=album_safety,
+            tracks=assessed_tracks,
+        )
+
     @app.get("/api/requests", response_model=list[MusicRequestRecord])
     async def list_requests(
+        request: Request,
         status_filter: Optional[RequestStatus] = Query(default=None, alias="status"),
         requester_name: Optional[str] = Query(default=None),
+        include_parent: bool = Query(default=False),
         limit: int = Query(default=80, ge=1, le=200),
     ) -> list[MusicRequestRecord]:
+        # Parent downloads stay separated from the main Kid Song Requests view
+        allow_parent_items = include_parent and _is_parent_authenticated(request)
         return db.list_requests(
             status=status_filter,
             requester_name=requester_name,
+            exclude_source=None if allow_parent_items else RequestSource.PARENT,
             limit=limit,
         )
 
@@ -163,15 +355,18 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         request: Request,
         payload: MusicRequestCreate,
     ) -> MusicRequestRecord:
-        # Prevent unauthenticated clients from spoofing parent source privileges
+        is_parent = _is_parent_authenticated(request)
+        # Prevent unauthenticated clients from spoofing parent source or override privileges
         effective_source = payload.source
-        if effective_source == RequestSource.PARENT and not _is_parent_authenticated(request):
+        effective_override = payload.parent_override and is_parent and effective_source == RequestSource.PARENT
+        if effective_source == RequestSource.PARENT and not is_parent:
             effective_source = RequestSource.IPAD
-        if payload.source_url and not _is_parent_authenticated(request):
-            # Direct URL submissions by kids are routed through safety check -> approval/block
+        if payload.source_url and not is_parent:
             effective_source = RequestSource.IPAD
 
-        sanitized_payload = payload.model_copy(update={"source": effective_source})
+        sanitized_payload = payload.model_copy(
+            update={"source": effective_source, "parent_override": effective_override}
+        )
         record, _ = await submit_music_request(
             db=db,
             settings=cfg,
@@ -180,6 +375,72 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
         if record.status == RequestStatus.QUEUED:
             worker.wake()
         return record
+
+    @app.post("/api/requests/album", response_model=AlbumRequestResponse, status_code=status.HTTP_201_CREATED)
+    async def create_album_request(
+        request: Request,
+        payload: AlbumRequestCreate,
+    ) -> AlbumRequestResponse:
+        is_parent = _is_parent_authenticated(request)
+        effective_source = payload.source
+        if effective_source == RequestSource.PARENT and not is_parent:
+            effective_source = RequestSource.IPAD
+        effective_override = (
+            payload.parent_override and is_parent and effective_source == RequestSource.PARENT
+        )
+        effective_skip_explicit = False if effective_override else (
+            payload.skip_explicit if is_parent else True
+        )
+
+        sanitized = payload.model_copy(
+            update={
+                "source": effective_source,
+                "parent_override": effective_override,
+                "skip_explicit": effective_skip_explicit,
+            }
+        )
+        result = await submit_album_request(db=db, settings=cfg, payload=sanitized)
+        if result is None:
+            raise HTTPException(status_code=404, detail="Album not found")
+        if result.queued_count > 0:
+            worker.wake()
+        return result
+
+    @app.post("/api/requests/cleanup", response_model=RequestCleanupResponse)
+    async def cleanup_requests(
+        payload: RequestCleanupPayload,
+        queue: str = Query(default="kid", pattern="^(kid|parent|all)$"),
+        _: None = Depends(require_parent),
+    ) -> RequestCleanupResponse:
+        if queue == "kid":
+            deleted = db.cleanup_requests(
+                scope=payload.scope,
+                exclude_source=RequestSource.PARENT,
+            )
+        elif queue == "parent":
+            deleted = db.cleanup_requests(
+                scope=payload.scope,
+                source=RequestSource.PARENT,
+            )
+        else:
+            deleted = db.cleanup_requests(scope=payload.scope)
+        return RequestCleanupResponse(deleted_count=deleted, scope=payload.scope)
+
+    @app.delete("/api/requests/{request_id}")
+    async def delete_single_request(
+        request_id: int,
+        _: None = Depends(require_parent),
+    ) -> dict[str, bool]:
+        rec = db.get_request(request_id)
+        if rec is None:
+            raise HTTPException(status_code=404, detail="Request not found")
+        if rec.status not in _FINISHED_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail="Only finished requests (completed, blocked, declined, or failed) can be removed",
+            )
+        db.delete_request(request_id)
+        return {"deleted": True}
 
     @app.get("/api/tts/{filename}", include_in_schema=False)
     async def serve_tts_audio(filename: str) -> FileResponse:
@@ -235,6 +496,24 @@ def create_app(settings: Optional[Settings] = None) -> FastAPI:
             }
         )
         return {"updated": True}
+
+    @app.get("/api/parent/downloads", response_model=list[MusicRequestRecord])
+    async def list_parent_downloads(
+        limit: int = Query(default=100, ge=1, le=200),
+        _: None = Depends(require_parent),
+    ) -> list[MusicRequestRecord]:
+        return db.list_requests(source=RequestSource.PARENT, limit=limit)
+
+    @app.post("/api/parent/downloads/cleanup", response_model=RequestCleanupResponse)
+    async def cleanup_parent_downloads(
+        payload: RequestCleanupPayload,
+        _: None = Depends(require_parent),
+    ) -> RequestCleanupResponse:
+        deleted = db.cleanup_requests(
+            scope=payload.scope,
+            source=RequestSource.PARENT,
+        )
+        return RequestCleanupResponse(deleted_count=deleted, scope=payload.scope)
 
     @app.get("/api/parent/settings", response_model=RuntimeSettingsView)
     async def get_parent_settings(

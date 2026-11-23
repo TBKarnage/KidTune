@@ -291,6 +291,8 @@ class Database:
         *,
         status: Optional[RequestStatus] = None,
         requester_name: Optional[str] = None,
+        source: Optional[RequestSource] = None,
+        exclude_source: Optional[RequestSource] = None,
         limit: int = 100,
     ) -> list[MusicRequestRecord]:
         clauses: list[str] = []
@@ -301,6 +303,12 @@ class Database:
         if requester_name:
             clauses.append("requester_name = ?")
             params.append(requester_name)
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source.value)
+        if exclude_source is not None:
+            clauses.append("source != ?")
+            params.append(exclude_source.value)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(limit)
         with self._conn() as conn:
@@ -309,6 +317,51 @@ class Database:
                 params,
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
+
+    def delete_request(self, request_id: int) -> bool:
+        with self._conn() as conn:
+            cursor = conn.execute("DELETE FROM requests WHERE id = ?", (request_id,))
+            return cursor.rowcount > 0
+
+    def cleanup_requests(
+        self,
+        *,
+        scope: str = "finished",
+        source: Optional[RequestSource] = None,
+        exclude_source: Optional[RequestSource] = None,
+    ) -> int:
+        if scope == "completed":
+            statuses = (RequestStatus.COMPLETED.value,)
+        elif scope == "errors":
+            statuses = (
+                RequestStatus.BLOCKED.value,
+                RequestStatus.DECLINED.value,
+                RequestStatus.FAILED.value,
+            )
+        else:
+            statuses = (
+                RequestStatus.COMPLETED.value,
+                RequestStatus.BLOCKED.value,
+                RequestStatus.DECLINED.value,
+                RequestStatus.FAILED.value,
+            )
+
+        placeholders = ", ".join("?" for _ in statuses)
+        clauses = [f"status IN ({placeholders})"]
+        params: list[Any] = list(statuses)
+        if source is not None:
+            clauses.append("source = ?")
+            params.append(source.value)
+        if exclude_source is not None:
+            clauses.append("source != ?")
+            params.append(exclude_source.value)
+
+        with self._conn() as conn:
+            cursor = conn.execute(
+                f"DELETE FROM requests WHERE {' AND '.join(clauses)}",
+                params,
+            )
+            return cursor.rowcount
 
     def update_request(self, request_id: int, **fields: Any) -> Optional[MusicRequestRecord]:
         if not fields:

@@ -64,10 +64,15 @@ class Settings(BaseSettings):
     def tts_dir(self) -> Path:
         return self.data_dir / "tts"
 
+    @property
+    def artwork_cache_dir(self) -> Path:
+        return self.data_dir / "artwork_cache"
+
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
         self.tts_dir.mkdir(parents=True, exist_ok=True)
+        self.artwork_cache_dir.mkdir(parents=True, exist_ok=True)
         self.music_dir.mkdir(parents=True, exist_ok=True)
 
     def resolve_session_secret(self) -> str:

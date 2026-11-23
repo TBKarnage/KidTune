@@ -4,13 +4,13 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>KidTune — Family Music Requests for Plex</title>
-  <meta name="description" content="A kid-friendly iPad app to request clean music for Plex and Plexamp with automatic explicit-content filtering and full metadata tagging." />
+  <meta name="description" content="A kid-friendly iPad app to request clean music and albums for Plex and Plexamp with automatic explicit-content filtering and full metadata tagging." />
 
   <!-- iPadOS / iOS PWA Support -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="default" />
   <meta name="apple-mobile-web-app-title" content="KidTune" />
-  <meta name="theme-color" content="#FAF6F0" />
+  <meta name="theme-color" content="#E1E5EC" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" sizes="180x180" href="/static/icons/apple-touch-icon.png" />
   <link rel="icon" type="image/png" sizes="192x192" href="/static/icons/icon-192.png" />
@@ -21,6 +21,9 @@
   <link rel="stylesheet" href="/static/css/styles.css" />
 </head>
 <body>
+  <!-- Ambient drifting album covers from downloaded tracks -->
+  <div id="floating-covers-layer" class="floating-covers-layer" aria-hidden="true"></div>
+
   <div class="app-shell">
     <header class="topbar">
       <div class="brand">
@@ -42,13 +45,19 @@
 
     <main id="kid-view" class="main-content">
       <section class="search-stage" aria-labelledby="hero-heading">
-        <div class="hero-copy">
-          <h1 id="hero-heading">Find a song for Plexamp</h1>
-          <p id="hero-subtitle">Search any song or artist. Clean tracks go straight to your Plex music library with album art and lyrics.</p>
+        <div class="search-stage-head">
+          <div class="hero-copy">
+            <h1 id="hero-heading">Find music for Plexamp</h1>
+            <p id="hero-subtitle">Search any song or full album. Clean tracks go straight to your Plex music library with album art and lyrics.</p>
+          </div>
+          <div class="mode-switcher" id="kid-search-mode" role="tablist" aria-label="Search type">
+            <button class="mode-pill active" data-mode="songs" type="button" role="tab" aria-selected="true">Songs</button>
+            <button class="mode-pill" data-mode="albums" type="button" role="tab" aria-selected="false">Albums</button>
+          </div>
         </div>
 
         <form id="search-form" class="search-bar" autocomplete="off">
-          <label for="search-input" class="sr-only">Search song or artist</label>
+          <label for="search-input" class="sr-only">Search song, album, or artist</label>
           <input
             id="search-input"
             type="search"
@@ -78,10 +87,12 @@
             <h2 id="queue-heading">Song Requests</h2>
             <p class="section-sub">Live download and Plex import progress</p>
           </div>
-          <div class="filter-tabs" role="tablist" aria-label="Filter requests">
-            <button class="filter-tab active" data-filter="all" type="button">All</button>
-            <button class="filter-tab" data-filter="mine" type="button">My Picks</button>
-            <button class="filter-tab" data-filter="completed" type="button">In Plex</button>
+          <div class="requests-toolbar">
+            <div class="filter-tabs" role="tablist" aria-label="Filter requests">
+              <button class="filter-tab active" data-filter="all" type="button">All</button>
+              <button class="filter-tab" data-filter="mine" type="button">My Picks</button>
+              <button class="filter-tab" data-filter="completed" type="button">In Plex</button>
+            </div>
           </div>
         </div>
         <div id="requests-list" class="requests-list"></div>
@@ -92,7 +103,7 @@
       <section class="parent-header-card">
         <div>
           <h1 id="parent-heading">Parent Controls</h1>
-          <p>Review flagged songs, edit metadata, and configure Plex, safety rules, and Google Home.</p>
+          <p>Review flagged songs, search &amp; download separately from the kids' list, manage queues, and configure Plex &amp; safety rules.</p>
         </div>
         <div class="parent-header-actions">
           <button id="back-to-kids-btn" class="btn btn-secondary" type="button">Back to Kid View</button>
@@ -108,7 +119,12 @@
         <button class="parent-tab active" data-tab="approvals" type="button">
           Approvals <span id="tab-pending-count" class="tab-count">0</span>
         </button>
-        <button class="parent-tab" data-tab="manual" type="button">Add Song / URL</button>
+        <button class="parent-tab" data-tab="manual" type="button">
+          Search &amp; Download <span id="tab-parent-dl-count" class="tab-count hidden">0</span>
+        </button>
+        <button class="parent-tab" data-tab="queues" type="button">
+          Queues &amp; Cleanup
+        </button>
         <button class="parent-tab" data-tab="settings" type="button">Safety &amp; Integrations</button>
       </nav>
 
@@ -117,25 +133,131 @@
       </section>
 
       <section id="tab-manual" class="parent-panel hidden">
-        <form id="parent-direct-form" class="panel-card form-grid">
-          <h2>Add Song or Direct URL (Parent)</h2>
-          <p class="field-help">Parents can submit a song query or direct YouTube URL to download with full metadata tagging.</p>
-          <div class="form-field">
-            <label for="direct-query">Song Title / Search Query</label>
-            <input id="direct-query" type="text" placeholder="e.g., Golden Hour by JVKE" required />
+        <div class="panel-card parent-search-stage">
+          <div class="search-stage-head">
+            <div>
+              <h2>Parent Music Search &amp; Downloads</h2>
+              <p class="section-sub">Search songs or full albums with full parent privileges, or queue a direct URL. Downloads stay private to this tab.</p>
+            </div>
+            <div class="mode-switcher" id="parent-search-mode" role="tablist" aria-label="Parent search mode">
+              <button class="mode-pill active" data-mode="songs" type="button" role="tab" aria-selected="true">Songs</button>
+              <button class="mode-pill" data-mode="albums" type="button" role="tab" aria-selected="false">Albums</button>
+              <button class="mode-pill" data-mode="direct" type="button" role="tab" aria-selected="false">Direct URL</button>
+            </div>
           </div>
-          <div class="form-field">
-            <label for="direct-url">Optional Direct Video URL</label>
-            <input id="direct-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+
+          <div id="parent-search-panel">
+            <form id="parent-search-form" class="search-bar" autocomplete="off">
+              <label for="parent-search-input" class="sr-only">Parent song or album search</label>
+              <input
+                id="parent-search-input"
+                type="search"
+                placeholder="Search any song or artist to download..."
+                enterkeyhint="search"
+                required
+              />
+              <button id="parent-clear-search-btn" class="btn-icon hidden" type="button" aria-label="Clear parent search">&times;</button>
+              <button id="parent-search-submit-btn" class="btn btn-primary" type="submit">Search</button>
+            </form>
+
+            <div id="parent-results-section" class="parent-results-wrap hidden">
+              <div class="section-header">
+                <h3 id="parent-results-heading">Search Results</h3>
+                <span id="parent-results-meta" class="section-meta"></span>
+              </div>
+              <div id="parent-results-grid" class="results-grid"></div>
+            </div>
           </div>
-          <div class="form-field">
-            <label for="direct-requester">Assign to Profile</label>
-            <input id="direct-requester" type="text" value="Parent" />
+
+          <div id="parent-direct-panel" class="hidden">
+            <form id="parent-direct-form" class="form-grid parent-direct-form">
+              <div class="form-field">
+                <label for="direct-query">Song Title / Search Query</label>
+                <input id="direct-query" type="text" placeholder="e.g., Golden Hour by JVKE" required />
+              </div>
+              <div class="form-field">
+                <label for="direct-url">Optional Direct Video URL</label>
+                <input id="direct-url" type="url" placeholder="https://www.youtube.com/watch?v=..." />
+              </div>
+              <div class="form-field">
+                <label for="direct-requester">Label / Requested By</label>
+                <input id="direct-requester" type="text" value="Parent" />
+              </div>
+              <div class="form-field form-checkbox direct-override-field">
+                <input id="direct-override-explicit" type="checkbox" checked />
+                <label for="direct-override-explicit">Allow explicit override for this parent download</label>
+              </div>
+              <div class="form-actions form-span-2">
+                <button id="direct-submit-btn" class="btn btn-primary" type="submit">Queue Parent Download</button>
+              </div>
+            </form>
           </div>
-          <div class="form-actions">
-            <button id="direct-submit-btn" class="btn btn-primary" type="submit">Queue Download</button>
+        </div>
+
+        <section class="content-section parent-downloads-section" aria-labelledby="parent-downloads-heading">
+          <div class="section-header">
+            <div>
+              <h2 id="parent-downloads-heading">Parent Downloads</h2>
+              <p class="section-sub">Separate from the kids' Song Requests queue</p>
+            </div>
+            <div class="requests-toolbar">
+              <div class="filter-tabs" role="tablist" aria-label="Filter parent downloads">
+                <button class="parent-dl-filter-tab filter-tab active" data-filter="all" type="button">All</button>
+                <button class="parent-dl-filter-tab filter-tab" data-filter="active" type="button">Active</button>
+                <button class="parent-dl-filter-tab filter-tab" data-filter="completed" type="button">In Plex</button>
+              </div>
+              <div class="cleanup-menu-wrap">
+                <button id="parent-cleanup-btn" class="btn btn-secondary btn-small" type="button" aria-expanded="false" aria-controls="parent-cleanup-menu">
+                  Clean Up
+                </button>
+                <div id="parent-cleanup-menu" class="cleanup-popover hidden" role="menu">
+                  <button class="parent-cleanup-option cleanup-option" data-cleanup="completed" type="button" role="menuitem">Clear completed</button>
+                  <button class="parent-cleanup-option cleanup-option" data-cleanup="errors" type="button" role="menuitem">Clear failed &amp; declined</button>
+                  <button class="parent-cleanup-option cleanup-option cleanup-option-strong" data-cleanup="finished" type="button" role="menuitem">Clear all finished</button>
+                  <p class="cleanup-note">Only clears Parent Downloads history.</p>
+                </div>
+              </div>
+            </div>
           </div>
-        </form>
+          <div id="parent-downloads-list" class="requests-list"></div>
+        </section>
+      </section>
+
+      <section id="tab-queues" class="parent-panel hidden">
+        <div class="panel-card queue-manager-card">
+          <div class="search-stage-head">
+            <div>
+              <h2>Queue Manager &amp; Cleanup</h2>
+              <p class="section-sub">Switch between the kids' Song Requests queue and Parent Downloads to retry, remove, or clean up finished items. Music in Plex is never deleted.</p>
+            </div>
+            <div class="mode-switcher" id="parent-queue-switch" role="tablist" aria-label="Select queue">
+              <button class="mode-pill active" data-queue="kid" type="button" role="tab" aria-selected="true">Kid Song Requests</button>
+              <button class="mode-pill" data-queue="parent" type="button" role="tab" aria-selected="false">Parent Downloads</button>
+            </div>
+          </div>
+
+          <div class="section-header queue-manager-toolbar">
+            <div class="filter-tabs" role="tablist" aria-label="Filter selected queue">
+              <button class="queue-mgr-filter-tab filter-tab active" data-filter="all" type="button">All</button>
+              <button class="queue-mgr-filter-tab filter-tab" data-filter="active" type="button">Active</button>
+              <button class="queue-mgr-filter-tab filter-tab" data-filter="completed" type="button">In Plex</button>
+              <button class="queue-mgr-filter-tab filter-tab" data-filter="errors" type="button">Blocked / Failed</button>
+            </div>
+            <div class="cleanup-menu-wrap">
+              <button id="queue-mgr-cleanup-btn" class="btn btn-secondary btn-small" type="button" aria-expanded="false" aria-controls="queue-mgr-cleanup-menu">
+                Clean Up Queue
+              </button>
+              <div id="queue-mgr-cleanup-menu" class="cleanup-popover hidden" role="menu">
+                <button class="queue-mgr-cleanup-option cleanup-option" data-cleanup="completed" type="button" role="menuitem">Clear “In Plex” songs</button>
+                <button class="queue-mgr-cleanup-option cleanup-option" data-cleanup="errors" type="button" role="menuitem">Clear blocked &amp; failed</button>
+                <button class="queue-mgr-cleanup-option cleanup-option cleanup-option-strong" data-cleanup="finished" type="button" role="menuitem">Clear all finished</button>
+                <p class="cleanup-note">Only clears items from the selected queue — downloaded music stays in Plex.</p>
+              </div>
+            </div>
+          </div>
+
+          <div id="queue-mgr-list" class="requests-list"></div>
+        </div>
       </section>
 
       <section id="tab-settings" class="parent-panel hidden">
@@ -277,7 +399,7 @@
         <h2 id="pin-modal-title">Unlock Parent Mode</h2>
         <button id="close-pin-modal" class="btn-icon" type="button" aria-label="Close">&times;</button>
       </div>
-      <p class="modal-copy">Enter your Parent PIN to review flagged songs or update safety settings.</p>
+      <p class="modal-copy">Enter your Parent PIN to review flagged songs, manage parent downloads, or update safety settings.</p>
       <form id="pin-login-form" class="pin-login-form">
         <label for="pin-login-input" class="sr-only">Parent PIN</label>
         <input
@@ -291,6 +413,19 @@
         <p id="pin-login-error" class="error-text hidden"></p>
         <button id="pin-login-submit" class="btn btn-primary" type="submit">Unlock</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Album Tracklist Modal -->
+  <div id="album-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="album-modal-title">
+    <div class="modal-card modal-album">
+      <div class="modal-header">
+        <h2 id="album-modal-title">Album Tracks</h2>
+        <button id="close-album-modal" class="btn-icon" type="button" aria-label="Close album view">&times;</button>
+      </div>
+      <div id="album-modal-hero" class="album-modal-hero"></div>
+      <div id="album-modal-tracks" class="album-modal-tracks"></div>
+      <div id="album-modal-footer" class="album-modal-footer"></div>
     </div>
   </div>
 

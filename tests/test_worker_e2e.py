@@ -136,3 +136,63 @@ async def test_worker_full_download_tag_and_plex_scan_pipeline(tmp_path: Path, m
     assert len(plex_scan_calls) == 1
     assert plex_scan_calls[0]["section_id"] == "7"
     assert plex_scan_calls[0]["album_dir"] == expected_file.parent
+
+
+@pytest.mark.asyncio
+async def test_worker_blocks_explicit_lyrics_before_plex_install(tmp_path: Path, monkeypatch):
+    cfg = Settings(
+        data_dir=tmp_path / "data",
+        music_dir=tmp_path / "music",
+        enable_background_worker=False,
+    )
+    cfg.ensure_directories()
+    db = Database(cfg.db_path)
+    db.init_db(cfg)
+    worker = BackgroundWorker(db=db, settings=cfg)
+
+    track = CatalogTrack(
+        track_id="100",
+        title="Untagged Song",
+        artist="Rock Band",
+        album="Album",
+        year="2024",
+        duration_sec=180,
+        explicit_verdict=ExplicitVerdict.CLEAN,
+    )
+    rec = db.create_request(
+        query="Untagged Song",
+        requester_name="Alex",
+        source=RequestSource.IPAD,
+        status=RequestStatus.QUEUED,
+        explicit_verdict=ExplicitVerdict.CLEAN,
+        track=track,
+    )
+
+    async def fake_download(**kwargs):
+        staged = kwargs["staging_dir"] / "audio.m4a"
+        staged.write_bytes(b"fake")
+        return DownloadedAudio(
+            audio_path=staged,
+            youtube_url="https://www.youtube.com/watch?v=test999",
+            youtube_title="Rock Band - Untagged Song",
+            youtube_channel="Rock Band - Topic",
+            duration_sec=180,
+        )
+
+    monkeypatch.setattr("app.services.worker.search_and_download_track", fake_download)
+    monkeypatch.setattr("app.services.worker.enrich_with_musicbrainz", AsyncMock(return_value=track))
+    monkeypatch.setattr(
+        "app.services.worker.fetch_lyrics",
+        AsyncMock(return_value=LyricsResult(plain_lyrics="This has fucking explicit lyrics")),
+    )
+
+    claimed = db.claim_next_queued_request()
+    assert claimed is not None
+    await worker.process_one_request(claimed)
+
+    final = db.get_request(rec.id)
+    assert final is not None
+    assert final.status == RequestStatus.BLOCKED
+    assert final.file_path == ""
+    assert list(cfg.music_dir.rglob("*.m4a")) == []
+

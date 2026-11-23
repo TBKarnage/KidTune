@@ -103,3 +103,94 @@ def test_duration_limit_routes_to_approval_or_block():
         query="2 Hour Mix", track=long_mix, policy_mode=PolicyMode.AUTO_CLEAN, max_track_duration_sec=600
     )
     assert auto_clean.blocked is True
+
+
+def test_mature_sexual_and_drug_content_blocked_without_false_positives():
+    # Kid-safe words containing substrings like "meth" (something) or "hell" (hella/shell) stay clean
+    assert find_profanity_matches("Something hella cool with shells, grass, and classical bass") == []
+
+    # Titles and lyrics like Falling In Reverse's "Sexy Drug" or "The Drug in Me Is You" are caught
+    sexy_drug = _track(title="Sexy Drug", artist="Falling In Reverse", verdict=ExplicitVerdict.CLEAN)
+    res = assess_request(query="falling in reverse", track=sexy_drug, policy_mode=PolicyMode.HYBRID)
+    assert res.blocked is True
+    assert "sexual" in res.matched_profanity
+    assert "drugs" in res.matched_profanity
+
+    vampire = _track(
+        title="I'm Not a Vampire",
+        artist="Falling In Reverse",
+        verdict=ExplicitVerdict.CLEAN,
+    ).model_copy(update={"album": "The Drug in Me Is You", "collection_explicit": True})
+    res_vamp = assess_request(
+        query="falling in reverse",
+        track=vampire,
+        lyrics_text="Cause I'm going straight to hell, cause you know damn well",
+        lyrics_checked=True,
+        policy_mode=PolicyMode.HYBRID,
+    )
+    assert res_vamp.blocked is True
+
+
+def test_explicit_album_requires_verified_clean_lyrics():
+    # Track from an explicit album with NO verified lyrics cannot auto-download
+    unverified_on_exp_album = _track(
+        title="Mystery Ballad",
+        artist="Pop Artist",
+        verdict=ExplicitVerdict.CLEAN,
+    ).model_copy(update={"collection_explicit": True})
+
+    res_hybrid = assess_request(
+        query="Mystery Ballad",
+        track=unverified_on_exp_album,
+        lyrics_text="",
+        lyrics_checked=True,
+        policy_mode=PolicyMode.HYBRID,
+    )
+    assert res_hybrid.allowed_auto is False
+    assert res_hybrid.requires_approval is True
+
+    res_auto = assess_request(
+        query="Mystery Ballad",
+        track=unverified_on_exp_album,
+        lyrics_text="",
+        lyrics_checked=True,
+        policy_mode=PolicyMode.AUTO_CLEAN,
+    )
+    assert res_auto.blocked is True
+
+    # Same track with verified clean lyrics (e.g. Firework on Teenage Dream) auto-downloads cleanly
+    res_verified = assess_request(
+        query="Firework",
+        track=unverified_on_exp_album,
+        lyrics_text="Baby you are a firework come on let your colors burst",
+        lyrics_checked=True,
+        policy_mode=PolicyMode.HYBRID,
+    )
+    assert res_verified.allowed_auto is True
+    assert res_verified.blocked is False
+
+
+def test_assess_album_clean_and_explicit():
+    from app.models import CatalogAlbum
+    from app.services.safety import assess_album
+
+    clean_album = CatalogAlbum(
+        album_id="1",
+        title="Encanto Soundtrack",
+        artist="Lin-Manuel Miranda",
+        track_count=10,
+        explicit_verdict=ExplicitVerdict.CLEAN,
+        is_explicit=False,
+    )
+    explicit_album = CatalogAlbum(
+        album_id="2",
+        title="Popular Monster",
+        artist="Falling In Reverse",
+        track_count=11,
+        explicit_verdict=ExplicitVerdict.EXPLICIT,
+        is_explicit=True,
+    )
+
+    assert assess_album(query="encanto", album=clean_album).allowed_auto is True
+    assert assess_album(query="popular monster", album=explicit_album).blocked is True
+

@@ -40,6 +40,7 @@ class ExplicitVerdict(str, Enum):
 class CatalogTrack(BaseModel):
     provider: str = "itunes"
     track_id: str = ""
+    collection_id: str = ""
     title: str
     artist: str
     album_artist: str = ""
@@ -53,6 +54,7 @@ class CatalogTrack(BaseModel):
     duration_sec: int = 0
     explicit_verdict: ExplicitVerdict = ExplicitVerdict.UNVERIFIED
     is_explicit: bool = False
+    collection_explicit: bool = False
     artwork_url: str = ""
     preview_url: str = ""
     musicbrainz_recording_id: str = ""
@@ -61,6 +63,20 @@ class CatalogTrack(BaseModel):
 
 
 CatalogTrack.model_rebuild()
+
+
+class CatalogAlbum(BaseModel):
+    provider: str = "itunes"
+    album_id: str = ""
+    title: str
+    artist: str
+    year: str = ""
+    genre: str = ""
+    track_count: int = 0
+    explicit_verdict: ExplicitVerdict = ExplicitVerdict.UNVERIFIED
+    is_explicit: bool = False
+    artwork_url: str = ""
+    clean_alternative_id: str = ""
 
 
 class SafetyAssessment(BaseModel):
@@ -78,6 +94,17 @@ class SearchTrackResult(BaseModel):
     safety: SafetyAssessment
 
 
+class SearchAlbumResult(BaseModel):
+    album: CatalogAlbum
+    safety: SafetyAssessment
+
+
+class AlbumDetailsResult(BaseModel):
+    album: CatalogAlbum
+    safety: SafetyAssessment
+    tracks: list[SearchTrackResult] = Field(default_factory=list)
+
+
 class MusicRequestCreate(BaseModel):
     query: str = Field(..., min_length=1, max_length=300)
     requester_name: str = Field(default="Kids", min_length=1, max_length=40)
@@ -85,6 +112,44 @@ class MusicRequestCreate(BaseModel):
     catalog_track: Optional[CatalogTrack] = None
     source_url: Optional[str] = None
     use_clean_alternative: bool = False
+    parent_override: bool = False
+
+
+class AlbumRequestCreate(BaseModel):
+    provider: str = Field(default="itunes", pattern="^(itunes|deezer)$")
+    album_id: str = Field(..., min_length=1, max_length=80)
+    requester_name: str = Field(default="Kids", min_length=1, max_length=40)
+    source: RequestSource = RequestSource.IPAD
+    skip_explicit: bool = True
+    parent_override: bool = False
+
+
+class AlbumRequestResponse(BaseModel):
+    album_title: str
+    artist: str
+    total_tracks: int
+    queued_count: int
+    pending_count: int
+    blocked_count: int
+    skipped_explicit_count: int = 0
+    requests: list["MusicRequestRecord"] = Field(default_factory=list)
+
+
+class RequestCleanupPayload(BaseModel):
+    scope: str = Field(default="finished", pattern="^(completed|errors|finished)$")
+
+
+class RequestCleanupResponse(BaseModel):
+    deleted_count: int
+    scope: str
+
+
+class LibraryCoverItem(BaseModel):
+    id: str
+    title: str = ""
+    artist: str = ""
+    album: str = ""
+    url: str
 
 
 class MusicRequestRecord(BaseModel):
@@ -118,6 +183,9 @@ class MusicRequestRecord(BaseModel):
     catalog_metadata: Optional[CatalogTrack] = None
     created_at: datetime
     updated_at: datetime
+
+
+AlbumRequestResponse.model_rebuild()
 
 
 class ParentLoginRequest(BaseModel):

@@ -81,6 +81,7 @@ def score_youtube_candidate(
     max_track_duration_sec: int = 600,
     require_clean_title: bool = False,
     blocked_words: Iterable[str] = (),
+    allow_explicit: bool = False,
 ) -> Optional[float]:
     """Return a preference score for a YouTube search entry, or None if unsafe/invalid."""
     title = str(entry.get("title") or "").strip()
@@ -88,7 +89,7 @@ def score_youtube_candidate(
         return None
 
     age_limit = int(entry.get("age_limit") or 0)
-    if age_limit >= 18:
+    if age_limit >= 18 and not allow_explicit:
         return None
 
     channel = str(entry.get("channel") or entry.get("uploader") or "").strip()
@@ -96,12 +97,13 @@ def score_youtube_candidate(
     tags = " ".join(str(t) for t in (entry.get("tags") or []))
     combined_meta = f"{title} {channel} {tags}"
 
-    if _EXPLICIT_VIDEO_RE.search(combined_meta):
-        return None
-    if find_profanity_matches(f"{title} {channel}", blocked_words):
-        return None
-    if description and _EXPLICIT_VIDEO_RE.search(description[:600]):
-        return None
+    if not allow_explicit:
+        if _EXPLICIT_VIDEO_RE.search(combined_meta):
+            return None
+        if find_profanity_matches(combined_meta, blocked_words):
+            return None
+        if description and _EXPLICIT_VIDEO_RE.search(description[:600]):
+            return None
 
     duration = int(round(float(entry.get("duration") or 0)))
     if duration <= 0 or duration > max_track_duration_sec:
@@ -113,7 +115,7 @@ def score_youtube_candidate(
     lower_title = title.lower()
     lower_target = f"{target_title} {target_artist}".lower()
 
-    if require_clean_title and not _CLEAN_VIDEO_RE.search(title):
+    if require_clean_title and not allow_explicit and not _CLEAN_VIDEO_RE.search(title):
         return None
 
     score = 100.0
@@ -260,6 +262,7 @@ async def search_and_download_track(
             max_track_duration_sec=max_track_duration_sec,
             require_clean_title=require_clean,
             blocked_words=blocked_words,
+            allow_explicit=allow_unverified_override,
         )
         if score is not None:
             scored.append((score, entry))
@@ -282,6 +285,7 @@ async def search_and_download_track(
             max_track_duration_sec=max_track_duration_sec,
             require_clean_title=require_clean,
             blocked_words=blocked_words,
+            allow_explicit=allow_unverified_override,
         )
         if verified_score is None and not allow_unverified_override:
             continue

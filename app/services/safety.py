@@ -4,14 +4,16 @@ import re
 from typing import Iterable, Optional
 
 from app.models import (
+    CatalogAlbum,
     CatalogTrack,
     ExplicitVerdict,
     PolicyMode,
     SafetyAssessment,
 )
 
-# Whole-word explicit profanity & severe explicit theme patterns.
-# Keep entries deliberate so ordinary kid-safe words are never false-positived.
+# Whole-word explicit profanity & mature theme patterns.
+# Strict word boundaries ensure ordinary kid-safe words (e.g. Classical, grapes,
+# cocktails, something, hella) are never false-positived.
 _BUILTIN_PROFANITY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("f-word", r"\bf(?:[u\*\u2022@#\$!_]+(?:c|[\*\u2022@#\$!_])k+|[\*\u2022@#\$!_]{2}k+)(?:ing|ed|er|ers|s)?\b"),
     ("s-word", r"\bs+h[i1!\*\u2022@#\$_]+t+(?:ty|ting|ted|head|s)?\b"),
@@ -25,14 +27,38 @@ _BUILTIN_PROFANITY_PATTERNS: tuple[tuple[str, str], ...] = (
     ("slut", r"\bslut(?:s|ty)?\b"),
     ("bastard", r"\bbastard(?:s)?\b"),
     ("asshole", r"\basshole(?:s)?\b"),
+    ("ass", r"\b(?:ass|badass|dumbass|jackass|smartass|fatass)(?:es)?\b"),
     ("bullshit", r"\bbull\s*shit\b"),
+    ("damn", r"\b(?:god)?damn(?:ed|it|s)?\b"),
+    ("piss", r"\bpiss(?:ed|ing|es)?\b"),
+    (
+        "hell-profanity",
+        r"\b(?:go(?:ing)?\s+(?:straight\s+)?to\s+hell|burn\s+in\s+hell|hell\s+of\s+a|what\s+the\s+hell|from\s+hell)\b",
+    ),
     ("n-word", r"\bn[i1!\*\u2022@#\$_]+g+g+(?:a|ah|er|ers|as|ahs)\b"),
     ("fag", r"\bfag(?:got|gots|s)?\b"),
-    ("porn", r"\bporn(?:ography|o)?\b"),
+    ("sexual", r"\bsex(?:y|ual|ually|uality|iest|ier)?\b"),
+    (
+        "explicit-sexual",
+        r"\b(?:porn(?:ography|o)?|horny|orgasm|stripper|strippers|erotic|nudes|boobs|tits|titties|blowjob|handjob|masturbat(?:e|ing|ion)|condom|dildo|threesome|foreplay)\b",
+    ),
+    ("drugs", r"\bdrugs?\b"),
     ("cocaine", r"\bcocaine\b"),
     ("heroin", r"\bheroin\b"),
-    ("meth", r"\bcrystal\s+meth\b"),
-    ("explicit-tag", r"\b(?:parental\s+advisory|uncensored|explicit\s+version|dirty\s+version)\b"),
+    ("meth", r"\b(?:crystal\s+)?meth(?:amphetamine)?\b"),
+    (
+        "substances",
+        r"\b(?:weed|marijuana|xanax|percocet|oxycontin|fentanyl|codeine|ecstasy|overdose|bong|crackhead)\b",
+    ),
+    (
+        "self-harm",
+        r"\b(?:suicid(?:e|al)|(?:kill|shoot|hang)\s+myself|slit\s+(?:my|your|their)\s+wrists?)\b",
+    ),
+    (
+        "graphic-violence",
+        r"\b(?:spill\s+my\s+blood|shot\s+me\s+dead|homicide)\b",
+    ),
+    ("explicit-tag", r"\b(?:parental\s+advisory|uncensored|explicit\s+version|dirty\s+version|nsfw)\b"),
 )
 
 _COMPILED_BUILTIN = tuple(
@@ -82,6 +108,7 @@ def assess_request(
     query: str,
     track: Optional[CatalogTrack],
     lyrics_text: str = "",
+    lyrics_checked: bool = False,
     source_url: Optional[str] = None,
     policy_mode: PolicyMode = PolicyMode.HYBRID,
     blocked_words: Iterable[str] = (),
@@ -125,13 +152,13 @@ def assess_request(
             clean_alternative=track.clean_alternative if track else None,
         )
 
-    # 2. Check lyrics profanity (catches untagged explicit tracks!)
+    # 2. Check lyrics profanity / mature themes (catches untagged explicit tracks!)
     if lyrics_text:
         lyric_hits = find_profanity_matches(lyrics_text, blocked_words)
         if lyric_hits:
             matched_profanity.extend(lyric_hits)
             reasons.append(
-                f"Explicit language detected in song lyrics ({', '.join(lyric_hits)})"
+                f"Explicit or mature language detected in song lyrics ({', '.join(lyric_hits)})"
             )
             return SafetyAssessment(
                 verdict=ExplicitVerdict.EXPLICIT,
@@ -233,7 +260,31 @@ def assess_request(
             reasons=["Explicitness unverified — sent to Parent Approval"],
         )
 
-    # 8. Verified CLEAN or CLEANED_EDIT
+    # 8. Track from a Parental Advisory / Explicit album whose lyrics could not be verified clean
+    if (
+        track.collection_explicit
+        and track.explicit_verdict != ExplicitVerdict.CLEANED_EDIT
+        and not lyrics_text
+    ):
+        if policy_mode == PolicyMode.AUTO_CLEAN:
+            return SafetyAssessment(
+                verdict=ExplicitVerdict.UNVERIFIED,
+                allowed_auto=False,
+                requires_approval=False,
+                blocked=True,
+                reasons=["Track is on an Explicit album and lyrics could not be verified"],
+            )
+        return SafetyAssessment(
+            verdict=ExplicitVerdict.UNVERIFIED,
+            allowed_auto=False,
+            requires_approval=True,
+            blocked=False,
+            reasons=[
+                "From a Parental Advisory album (lyrics unverified) — sent to Parent Approval"
+            ],
+        )
+
+    # 9. Verified CLEAN or CLEANED_EDIT
     if policy_mode == PolicyMode.STRICT:
         return SafetyAssessment(
             verdict=track.explicit_verdict,
@@ -246,10 +297,93 @@ def assess_request(
     label = (
         "Verified clean / radio edit"
         if track.explicit_verdict == ExplicitVerdict.CLEANED_EDIT
+        else "Verified clean (lyrics checked)" if (lyrics_checked and lyrics_text)
         else "Verified clean in music catalog"
     )
     return SafetyAssessment(
         verdict=track.explicit_verdict,
+        allowed_auto=True,
+        requires_approval=False,
+        blocked=False,
+        reasons=[label],
+    )
+
+
+def assess_album(
+    *,
+    query: str,
+    album: CatalogAlbum,
+    policy_mode: PolicyMode = PolicyMode.HYBRID,
+    blocked_words: Iterable[str] = (),
+    blocked_artists: Iterable[str] = (),
+) -> SafetyAssessment:
+    reasons: list[str] = []
+    matched_profanity: list[str] = []
+
+    text_to_scan = " ".join(part for part in [query, album.title, album.artist] if part)
+    hits = find_profanity_matches(text_to_scan, blocked_words)
+    if hits:
+        matched_profanity.extend(hits)
+        reasons.append(f"Blocked term detected ({', '.join(hits)})")
+
+    if is_artist_blocked(album.artist, blocked_artists):
+        reasons.append(f"Artist '{album.artist}' is on the parent blocklist")
+
+    if reasons:
+        return SafetyAssessment(
+            verdict=ExplicitVerdict.EXPLICIT,
+            allowed_auto=False,
+            requires_approval=False,
+            blocked=True,
+            reasons=reasons,
+            matched_profanity=matched_profanity,
+        )
+
+    if album.is_explicit or album.explicit_verdict == ExplicitVerdict.EXPLICIT:
+        msg = "Album is marked Parental Advisory / Explicit"
+        if album.clean_alternative_id:
+            msg += " (clean edition available)"
+        return SafetyAssessment(
+            verdict=ExplicitVerdict.EXPLICIT,
+            allowed_auto=False,
+            requires_approval=False,
+            blocked=True,
+            reasons=[msg],
+        )
+
+    if album.explicit_verdict == ExplicitVerdict.UNVERIFIED:
+        if policy_mode == PolicyMode.AUTO_CLEAN:
+            return SafetyAssessment(
+                verdict=ExplicitVerdict.UNVERIFIED,
+                allowed_auto=False,
+                requires_approval=False,
+                blocked=True,
+                reasons=["Album explicitness could not be verified"],
+            )
+        return SafetyAssessment(
+            verdict=ExplicitVerdict.UNVERIFIED,
+            allowed_auto=False,
+            requires_approval=True,
+            blocked=False,
+            reasons=["Album rating unverified — tracks checked individually"],
+        )
+
+    if policy_mode == PolicyMode.STRICT:
+        return SafetyAssessment(
+            verdict=album.explicit_verdict,
+            allowed_auto=False,
+            requires_approval=True,
+            blocked=False,
+            reasons=["Strict Parent Approval mode is enabled"],
+        )
+
+    label = (
+        "Clean / Edited Album"
+        if album.explicit_verdict == ExplicitVerdict.CLEANED_EDIT
+        else "Clean Album (each track checked)"
+    )
+    return SafetyAssessment(
+        verdict=album.explicit_verdict,
         allowed_auto=True,
         requires_approval=False,
         blocked=False,
